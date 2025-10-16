@@ -112,6 +112,34 @@ export default function UploadPage() {
     );
   }
 
+  if (!isConnected || !address) {
+    return (
+      <div className="container py-12">
+        <Card className="max-w-2xl mx-auto">
+          <CardHeader>
+            <CardTitle>Wallet Connection Required</CardTitle>
+            <CardDescription>
+              Please connect your wallet to upload memes and earn rewards
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              You need to connect your MetaMask wallet to:
+            </p>
+            <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+              <li>Link your memes to your wallet address</li>
+              <li>Earn ETH rewards when people like your memes</li>
+              <li>Claim accumulated rewards anytime</li>
+            </ul>
+            <p className="text-sm font-medium">
+              Click the "Connect Wallet" button in the header to get started.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="container py-12">
       <Card className="max-w-2xl mx-auto">
