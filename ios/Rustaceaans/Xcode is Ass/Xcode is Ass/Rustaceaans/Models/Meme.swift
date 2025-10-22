@@ -1,11 +1,41 @@
 import Foundation
 
+// MARK: - User Model
+struct User: Identifiable, Codable {
+    var id: String { walletAddress }  // Use wallet as ID
+    let walletAddress: String
+    let email: String?
+    let name: String?
+    let oauthProvider: String
+    let oauthId: String
+    let createdAt: String
+    
+    enum CodingKeys: String, CodingKey {
+        case walletAddress = "wallet_address"
+        case email
+        case name
+        case oauthProvider = "oauth_provider"
+        case oauthId = "oauth_id"
+        case createdAt = "created_at"
+    }
+    
+    var displayName: String {
+        if let name = name, !name.isEmpty {
+            return name
+        }
+        if let email = email {
+            return email
+        }
+        return String(walletAddress.prefix(8)) + "..."
+    }
+}
+
 struct Meme: Identifiable, Codable {
     let id: Int
     let imageUrl: String
     let caption: String
     let tags: String  // API returns string, not array
-    let creatorAddress: String
+    let creatorAddress: String?
     let createdAt: String?  // Optional since API might not always return it
     var likes: Int
     let commentCount: Int
@@ -41,12 +71,6 @@ struct Comment: Identifiable, Codable {
         case content
         case createdAt = "created_at"
     }
-}
-
-struct User: Codable {
-    let address: String
-    let username: String?
-    let email: String?
 }
 
 struct UploadResponse: Codable {
