@@ -8,6 +8,12 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::collections::HashMap;
 
+// Production-ready modules (use when deploying)
+// Uncomment these when ready to use PostgreSQL and cloud storage:
+// mod db;
+// mod storage;
+// use db::DbPool;
+
 // MARK: - User Models
 #[derive(Serialize, Deserialize, Clone)]
 pub struct User {
