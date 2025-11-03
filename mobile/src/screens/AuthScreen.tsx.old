@@ -1,0 +1,305 @@
+import React, { useState } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+} from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Ionicons } from '@expo/vector-icons';
+import { COLORS } from '@/config/constants';
+import { useAuthStore } from '@/stores/authStore';
+import { apiService } from '@/services/api';
+
+export const AuthScreen: React.FC = () => {
+  const navigation = useNavigation();
+  const [loading, setLoading] = useState(false);
+  const { login } = useAuthStore();
+  
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+
+  const handleAppleSignIn = async () => {
+    try {
+      setLoading(true);
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      // Register/login user with backend
+      const user = await apiService.registerUser({
+        wallet_address: credential.user, // Using Apple user ID as wallet address for now
+        email: credential.email,
+        name: credential.fullName?.givenName
+          ? `${credential.fullName.givenName} ${credential.fullName.familyName}`
+          : undefined,
+        oauth_provider: 'apple',
+        oauth_id: credential.user,
+      });
+
+      // Create a mock JWT token (in production, backend should return this)
+      const token = `apple_${credential.user}`;
+      await login(user, token);
+    } catch (error: any) {
+      if (error.code !== 'ERR_CANCELED') {
+        Alert.alert('Error', 'Failed to sign in with Apple');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setLoading(true);
+      
+      // Check if Google Client ID is configured
+      if (!OAUTH_CONFIG.google.clientId) {
+        Alert.alert(
+          'Configuration Required',
+          'Google Sign-In is not configured yet. Please use Demo Account or add EXPO_PUBLIC_GOOGLE_CLIENT_ID to your .env file.\n\nFor now, use the Demo Account button!',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      const redirectUri = AuthSession.makeRedirectUri({
+        scheme: 'rustaceaans',
+      });
+
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+        `client_id=${OAUTH_CONFIG.google.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&response_type=code` +
+        `&scope=email profile`;
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+
+      if (result.type === 'success') {
+        // In production, exchange the code for tokens on the backend
+        Alert.alert('Success', 'Google sign in will be implemented with backend');
+      }
+    } catch (error) {
+      console.error('Google sign in error:', error);
+      Alert.alert(
+        'Sign In Error', 
+        'Google Sign-In is not fully configured yet. Please use the Demo Account button to test the app!'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGitHubSignIn = async () => {
+    try {
+      setLoading(true);
+      
+      // Check if GitHub Client ID is configured
+      if (!OAUTH_CONFIG.github.clientId) {
+        Alert.alert(
+          'Configuration Required',
+          'GitHub Sign-In is not configured yet. Please use Demo Account or add EXPO_PUBLIC_GITHUB_CLIENT_ID to your .env file.\n\nFor now, use the Demo Account button!',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+      
+      const redirectUri = AuthSession.makeRedirectUri({
+        scheme: 'rustaceaans',
+      });
+
+      const authUrl = `https://github.com/login/oauth/authorize?` +
+        `client_id=${OAUTH_CONFIG.github.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=user:email`;
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+
+      if (result.type === 'success') {
+        Alert.alert('Success', 'GitHub sign in will be implemented with backend');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to sign in with GitHub');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDemoLogin = async () => {
+    try {
+      setLoading(true);
+      
+      // Create a demo user
+      const demoWalletAddress = `0xDemo${Date.now().toString().slice(-8)}`;
+      const user = await apiService.registerUser({
+        wallet_address: demoWalletAddress,
+        name: 'Demo User',
+        oauth_provider: 'demo',
+        oauth_id: demoWalletAddress,
+      });
+
+      const token = `demo_${demoWalletAddress}`;
+      await login(user, token);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to create demo account');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <LinearGradient
+      colors={[COLORS.gradient.start, COLORS.gradient.end]}
+      style={styles.container}
+    >
+      <View style={styles.content}>
+        {/* Logo/Brand */}
+        <View style={styles.logoContainer}>
+          <View style={styles.logo}>
+            <Ionicons name="rocket" size={64} color={COLORS.background} />
+          </View>
+          <Text style={styles.title}>Rustaceaans</Text>
+          <Text style={styles.subtitle}>
+            Share. Connect. Earn Crypto.
+          </Text>
+        </View>
+
+        {/* Auth Buttons */}
+        <View style={styles.buttonsContainer}>
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+            cornerRadius={12}
+            style={styles.appleButton}
+            onPress={handleAppleSignIn}
+          />
+
+          <TouchableOpacity
+            style={[styles.button, styles.googleButton]}
+            onPress={handleGoogleSignIn}
+            disabled={loading}
+          >
+            <Ionicons name="logo-google" size={24} color={COLORS.text} />
+            <Text style={[styles.buttonText, styles.buttonTextDark]}>
+              Continue with Google
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.githubButton]}
+            onPress={handleGitHubSignIn}
+            disabled={loading}
+          >
+            <Ionicons name="logo-github" size={24} color={COLORS.background} />
+            <Text style={styles.buttonText}>Continue with GitHub</Text>
+          </TouchableOpacity>
+
+          {/* Demo Login */}
+          <TouchableOpacity
+            style={[styles.button, styles.demoButton]}
+            onPress={handleDemoLogin}
+            disabled={loading}
+          >
+            <Ionicons name="person" size={24} color={COLORS.primary} />
+            <Text style={[styles.buttonText, styles.buttonTextPrimary]}>
+              Demo Account
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Terms */}
+        <Text style={styles.terms}>
+          By continuing, you agree to our Terms of Service and Privacy Policy
+        </Text>
+      </View>
+    </LinearGradient>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  content: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: 24,
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginTop: 80,
+  },
+  logo: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  title: {
+    fontSize: 36,
+    fontWeight: '700',
+    color: COLORS.background,
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: COLORS.background,
+    opacity: 0.9,
+  },
+  buttonsContainer: {
+    gap: 12,
+  },
+  appleButton: {
+    height: 56,
+  },
+  button: {
+    height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+    gap: 12,
+  },
+  googleButton: {
+    backgroundColor: COLORS.background,
+  },
+  githubButton: {
+    backgroundColor: '#24292e',
+  },
+  demoButton: {
+    backgroundColor: COLORS.background,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+  },
+  buttonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.background,
+  },
+  buttonTextDark: {
+    color: COLORS.text,
+  },
+  buttonTextPrimary: {
+    color: COLORS.primary,
+  },
+  terms: {
+    fontSize: 12,
+    color: COLORS.background,
+    opacity: 0.8,
+    textAlign: 'center',
+    marginTop: 24,
+  },
+});

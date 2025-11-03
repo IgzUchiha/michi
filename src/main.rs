@@ -2,17 +2,16 @@ use actix_web::{web, App, HttpResponse, HttpServer, Responder, middleware};
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_multipart::Multipart;
+use actix_web_httpauth::middleware::HttpAuthentication;
 use futures_util::stream::StreamExt as _;
 use serde::{Deserialize, Serialize};
+use sqlx::postgres::PgPoolOptions;
 use std::io::Write;
 use std::sync::Mutex;
 use std::collections::HashMap;
 
-// Production-ready modules (use when deploying)
-// Uncomment these when ready to use PostgreSQL and cloud storage:
-// mod db;
-// mod storage;
-// use db::DbPool;
+// Authentication module
+mod auth;
 
 // MARK: - User Models
 #[derive(Serialize, Deserialize, Clone)]
@@ -20,9 +19,15 @@ pub struct User {
     pub wallet_address: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub profile_picture: Option<String>,
+    pub bio: Option<String>,
     pub oauth_provider: String, // "google", "apple", "email"
     pub oauth_id: String,       // Unique ID from OAuth provider
     pub created_at: String,
+    #[serde(default)]
+    pub followers_count: i32,
+    #[serde(default)]
+    pub following_count: i32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -30,8 +35,17 @@ pub struct RegisterUserRequest {
     pub wallet_address: String,
     pub email: Option<String>,
     pub name: Option<String>,
+    pub profile_picture: Option<String>,
+    pub bio: Option<String>,
     pub oauth_provider: String,
     pub oauth_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub name: Option<String>,
+    pub bio: Option<String>,
+    pub profile_picture: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -46,11 +60,53 @@ pub struct Meme {
     tags: String,
     image: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    video: Option<String>,
+    #[serde(default)]
+    media_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     evm_address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<User>,
     #[serde(default)]
     likes: i32,
     #[serde(default)]
     comment_count: i32,
+    #[serde(default)]
+    is_liked: bool,
+    created_at: String,
+}
+
+// Comment Models
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Comment {
+    id: i32,
+    post_id: i32,
+    user_id: String,
+    user: Option<User>,
+    text: String,
+    created_at: String,
+    likes: i32,
+    is_liked: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AddCommentRequest {
+    user_id: String,
+    text: String,
+}
+
+// Follow Models
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Follow {
+    follower_id: String,
+    following_id: String,
+    created_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FollowRequest {
+    follower_id: String,
+    following_id: String,
 }
 
 // MARK: - Message Models
@@ -109,6 +165,9 @@ struct AppState {
     messages: Mutex<Vec<Message>>,
     next_message_id: Mutex<i32>,
     users: Mutex<Vec<User>>,
+    comments: Mutex<Vec<Comment>>,
+    next_comment_id: Mutex<i32>,
+    follows: Mutex<Vec<Follow>>,
 }
 
 async fn get_memes(data: web::Data<AppState>) -> impl Responder {
@@ -220,9 +279,14 @@ async fn upload_meme(
         caption,
         tags,
         image: image_url,
+        video: None,
+        media_type: "image".to_string(),
         evm_address,
+        user: None,
         likes: 0,
         comment_count: 0,
+        is_liked: false,
+        created_at: chrono::Utc::now().to_rfc3339(),
     };
 
     let mut memes = data.memes.lock().unwrap();
@@ -251,9 +315,13 @@ async fn register_user(
         wallet_address: body.wallet_address.clone(),
         email: body.email.clone(),
         name: body.name.clone(),
+        profile_picture: body.profile_picture.clone(),
+        bio: body.bio.clone(),
         oauth_provider: body.oauth_provider.clone(),
         oauth_id: body.oauth_id.clone(),
         created_at: chrono::Utc::now().to_rfc3339(),
+        followers_count: 0,
+        following_count: 0,
     };
     
     users.push(new_user.clone());
@@ -315,6 +383,272 @@ async fn get_user_by_wallet(
             "error": "User not found"
         }))
     }
+}
+
+async fn update_user_profile(
+    wallet: web::Path<String>,
+    body: web::Json<UpdateProfileRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let mut users = data.users.lock().unwrap();
+    let wallet_address = wallet.into_inner();
+    
+    if let Some(user) = users.iter_mut().find(|u| u.wallet_address == wallet_address) {
+        if let Some(name) = &body.name {
+            user.name = Some(name.clone());
+        }
+        if let Some(bio) = &body.bio {
+            user.bio = Some(bio.clone());
+        }
+        if let Some(profile_picture) = &body.profile_picture {
+            user.profile_picture = Some(profile_picture.clone());
+        }
+        
+        println!("✏️ Updated profile for {}", wallet_address);
+        HttpResponse::Ok().json(user.clone())
+    } else {
+        HttpResponse::NotFound().json(serde_json::json!({
+            "error": "User not found"
+        }))
+    }
+}
+
+// MARK: - Follow Endpoints
+
+async fn follow_user(
+    body: web::Json<FollowRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let mut follows = data.follows.lock().unwrap();
+    
+    // Check if already following
+    if follows.iter().any(|f| f.follower_id == body.follower_id && f.following_id == body.following_id) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Already following"
+        }));
+    }
+    
+    let new_follow = Follow {
+        follower_id: body.follower_id.clone(),
+        following_id: body.following_id.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    
+    follows.push(new_follow);
+    drop(follows);
+    
+    // Update follower counts
+    let mut users = data.users.lock().unwrap();
+    if let Some(follower) = users.iter_mut().find(|u| u.wallet_address == body.follower_id) {
+        follower.following_count += 1;
+    }
+    if let Some(following) = users.iter_mut().find(|u| u.wallet_address == body.following_id) {
+        following.followers_count += 1;
+    }
+    
+    println!("👥 {} followed {}", body.follower_id, body.following_id);
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "Successfully followed"
+    }))
+}
+
+async fn unfollow_user(
+    body: web::Json<FollowRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let mut follows = data.follows.lock().unwrap();
+    
+    let initial_len = follows.len();
+    follows.retain(|f| !(f.follower_id == body.follower_id && f.following_id == body.following_id));
+    
+    if follows.len() == initial_len {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "error": "Not following"
+        }));
+    }
+    
+    drop(follows);
+    
+    // Update follower counts
+    let mut users = data.users.lock().unwrap();
+    if let Some(follower) = users.iter_mut().find(|u| u.wallet_address == body.follower_id) {
+        follower.following_count = follower.following_count.saturating_sub(1);
+    }
+    if let Some(following) = users.iter_mut().find(|u| u.wallet_address == body.following_id) {
+        following.followers_count = following.followers_count.saturating_sub(1);
+    }
+    
+    println!("👋 {} unfollowed {}", body.follower_id, body.following_id);
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "message": "Successfully unfollowed"
+    }))
+}
+
+async fn check_following(
+    path: web::Path<(String, String)>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let (follower_id, following_id) = path.into_inner();
+    let follows = data.follows.lock().unwrap();
+    
+    let is_following = follows.iter().any(|f| f.follower_id == follower_id && f.following_id == following_id);
+    
+    HttpResponse::Ok().json(serde_json::json!({
+        "is_following": is_following
+    }))
+}
+
+async fn get_followers(
+    user_id: web::Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let follows = data.follows.lock().unwrap();
+    let users = data.users.lock().unwrap();
+    let target_user = user_id.into_inner();
+    
+    let follower_ids: Vec<String> = follows
+        .iter()
+        .filter(|f| f.following_id == target_user)
+        .map(|f| f.follower_id.clone())
+        .collect();
+    
+    let followers: Vec<User> = users
+        .iter()
+        .filter(|u| follower_ids.contains(&u.wallet_address))
+        .cloned()
+        .collect();
+    
+    HttpResponse::Ok().json(followers)
+}
+
+async fn get_following(
+    user_id: web::Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let follows = data.follows.lock().unwrap();
+    let users = data.users.lock().unwrap();
+    let target_user = user_id.into_inner();
+    
+    let following_ids: Vec<String> = follows
+        .iter()
+        .filter(|f| f.follower_id == target_user)
+        .map(|f| f.following_id.clone())
+        .collect();
+    
+    let following: Vec<User> = users
+        .iter()
+        .filter(|u| following_ids.contains(&u.wallet_address))
+        .cloned()
+        .collect();
+    
+    HttpResponse::Ok().json(following)
+}
+
+async fn get_user_posts(
+    user_id: web::Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let memes = data.memes.lock().unwrap();
+    let target_user = user_id.into_inner();
+    
+    let user_posts: Vec<Meme> = memes
+        .iter()
+        .filter(|m| m.evm_address.as_ref().map_or(false, |addr| addr == &target_user))
+        .cloned()
+        .collect();
+    
+    HttpResponse::Ok().json(user_posts)
+}
+
+async fn get_following_feed(
+    user_id: web::Path<String>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let follows = data.follows.lock().unwrap();
+    let memes = data.memes.lock().unwrap();
+    let target_user = user_id.into_inner();
+    
+    // Get list of users being followed
+    let following_ids: Vec<String> = follows
+        .iter()
+        .filter(|f| f.follower_id == target_user)
+        .map(|f| f.following_id.clone())
+        .collect();
+    
+    // Get posts from followed users
+    let mut feed_posts: Vec<Meme> = memes
+        .iter()
+        .filter(|m| m.evm_address.as_ref().map_or(false, |addr| following_ids.contains(addr)))
+        .cloned()
+        .collect();
+    
+    // Sort by created_at (newest first)
+    feed_posts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    
+    HttpResponse::Ok().json(feed_posts)
+}
+
+// MARK: - Comment Endpoints
+
+async fn get_comments(
+    post_id: web::Path<i32>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let comments = data.comments.lock().unwrap();
+    let users = data.users.lock().unwrap();
+    let target_post = post_id.into_inner();
+    
+    let mut post_comments: Vec<Comment> = comments
+        .iter()
+        .filter(|c| c.post_id == target_post)
+        .cloned()
+        .collect();
+    
+    // Attach user info to comments
+    for comment in &mut post_comments {
+        if let Some(user) = users.iter().find(|u| u.wallet_address == comment.user_id) {
+            comment.user = Some(user.clone());
+        }
+    }
+    
+    HttpResponse::Ok().json(post_comments)
+}
+
+async fn add_comment(
+    post_id: web::Path<i32>,
+    body: web::Json<AddCommentRequest>,
+    data: web::Data<AppState>,
+) -> impl Responder {
+    let mut comments = data.comments.lock().unwrap();
+    let mut next_id = data.next_comment_id.lock().unwrap();
+    
+    let new_comment = Comment {
+        id: *next_id,
+        post_id: post_id.into_inner(),
+        user_id: body.user_id.clone(),
+        user: None,
+        text: body.text.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        likes: 0,
+        is_liked: false,
+    };
+    
+    *next_id += 1;
+    comments.push(new_comment.clone());
+    drop(comments);
+    drop(next_id);
+    
+    // Update comment count on post
+    let mut memes = data.memes.lock().unwrap();
+    if let Some(meme) = memes.iter_mut().find(|m| m.id == new_comment.post_id) {
+        meme.comment_count += 1;
+    }
+    
+    println!("💬 New comment on post {}", new_comment.post_id);
+    
+    HttpResponse::Ok().json(new_comment)
 }
 
 // MARK: - Message Endpoints
@@ -457,18 +791,28 @@ async fn main() -> std::io::Result<()> {
             caption: "Doge".to_string(),
             tags: "classic, crypto".to_string(),
             image: "https://i.kym-cdn.com/entries/icons/original/000/013/564/doge.jpg".to_string(),
+            video: None,
+            media_type: "image".to_string(),
             evm_address: Some("0x39D0F19273036293764262aCb5115F223aEF8f79".to_string()),
+            user: None,
             likes: 12,
             comment_count: 3,
+            is_liked: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
         },
         Meme {
             id: 2,
             caption: "Pepe the Frog".to_string(),
             tags: "classic, rare".to_string(),
             image: "https://i.kym-cdn.com/entries/icons/original/000/017/618/pepefroggie.jpg".to_string(),
+            video: None,
+            media_type: "image".to_string(),
             evm_address: Some("0x2555ea784eBDb81C1704f8b749Dbbc68aDaCB723".to_string()),
+            user: None,
             likes: 8,
             comment_count: 1,
+            is_liked: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
         },
     ];
 
@@ -478,7 +822,41 @@ async fn main() -> std::io::Result<()> {
         messages: Mutex::new(Vec::new()),
         next_message_id: Mutex::new(1),
         users: Mutex::new(Vec::new()),
+        comments: Mutex::new(Vec::new()),
+        next_comment_id: Mutex::new(1),
+        follows: Mutex::new(Vec::new()),
     });
+
+    // Load environment variables
+    dotenv::dotenv().ok();
+    
+    // Setup database connection (optional - for auth system)
+    let database_url = std::env::var("DATABASE_URL").ok();
+    let pool = if let Some(db_url) = database_url {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&db_url)
+            .await
+        {
+            Ok(pool) => {
+                println!("✅ Connected to PostgreSQL database");
+                Some(web::Data::new(pool))
+            }
+            Err(e) => {
+                println!("⚠️  Database connection failed: {}", e);
+                println!("   Falling back to in-memory storage");
+                None
+            }
+        }
+    } else {
+        println!("ℹ️  No DATABASE_URL found, using in-memory storage");
+        None
+    };
+
+    // JWT Secret for authentication
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string());
+    let jwt_secret = web::Data::new(jwt_secret);
 
     // Get port from environment variable or default to 8000
     let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
@@ -486,6 +864,12 @@ async fn main() -> std::io::Result<()> {
     
     println!("🚀 Server starting on {}", bind_address);
     println!("📁 Uploads will be saved to ./uploads/");
+    if pool.is_some() {
+        println!("🔐 Authentication system enabled");
+    }
+    
+    let pool_clone = pool.clone();
+    let jwt_secret_clone = jwt_secret.clone();
     
     HttpServer::new(move || {
         let cors = Cors::default()
@@ -494,19 +878,52 @@ async fn main() -> std::io::Result<()> {
             .allow_any_header()
             .max_age(3600);
 
-        App::new()
+        let mut app = App::new()
             .app_data(app_state.clone())
+            .app_data(jwt_secret_clone.clone())
             .wrap(cors)
-            .wrap(middleware::Logger::default())
-            // User routes
+            .wrap(middleware::Logger::default());
+
+        // Add database-based auth routes if database is available
+        if let Some(ref pool_data) = pool_clone {
+            app = app
+                .app_data(pool_data.clone())
+                // Authentication routes (no auth required)
+                .route("/auth/register", web::post().to(auth::register))
+                .route("/auth/login", web::post().to(auth::login))
+                .route("/auth/logout", web::post().to(auth::logout))
+                // Protected auth routes
+                .service(
+                    web::scope("/auth")
+                        .wrap(HttpAuthentication::bearer(auth::jwt_middleware))
+                        .route("/me", web::get().to(auth::get_current_user))
+                        .route("/profile", web::put().to(auth::update_profile))
+                );
+        }
+
+        app
+            // Legacy user routes (for backwards compatibility)
             .route("/users/register", web::post().to(register_user))
             .route("/users/search", web::get().to(search_users))
             .route("/users", web::get().to(get_all_users))
             .route("/users/{wallet}", web::get().to(get_user_by_wallet))
-            // Meme routes
+            .route("/users/{wallet}", web::put().to(update_user_profile))
+            .route("/users/{user_id}/posts", web::get().to(get_user_posts))
+            .route("/users/{user_id}/followers", web::get().to(get_followers))
+            .route("/users/{user_id}/following", web::get().to(get_following))
+            // Meme/Post routes
             .route("/memes", web::get().to(get_memes))
             .route("/memes", web::post().to(upload_meme))
+            .route("/memes/upload", web::post().to(upload_meme))
             .route("/memes/{id}/like", web::post().to(like_meme))
+            .route("/memes/{post_id}/comments", web::get().to(get_comments))
+            .route("/memes/{post_id}/comments", web::post().to(add_comment))
+            // Feed routes
+            .route("/feed/{user_id}", web::get().to(get_following_feed))
+            // Follow routes
+            .route("/follow", web::post().to(follow_user))
+            .route("/follow", web::delete().to(unfollow_user))
+            .route("/follow/check/{follower_id}/{following_id}", web::get().to(check_following))
             // Message routes
             .route("/messages/send", web::post().to(send_message))
             .route("/messages/conversations/{user_id}", web::get().to(get_conversations))

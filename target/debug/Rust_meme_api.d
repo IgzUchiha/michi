@@ -1,1 +1,1 @@
-/Users/igmercastillo/Rust_meme_api/target/debug/Rust_meme_api: /Users/igmercastillo/Rust_meme_api/src/main.rs
+/Users/igmercastillo/code/RustaceaaansMichi/target/debug/Rust_meme_api: /Users/igmercastillo/code/RustaceaaansMichi/src/auth.rs /Users/igmercastillo/code/RustaceaaansMichi/src/main.rs

@@ -7,9 +7,27 @@ Cargo.lock
 # Uploads
 /uploads
 
-# Environment
+# Environment Variables - NEVER COMMIT THESE!
 .env
-.env*.local
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+*.env
+!.env.example
+!.env.sample
+!.env.template
+
+# Secrets & Keys
+secrets.json
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+.envrc
+.secrets
 
 # Node.js / Frontend
 /node_modules

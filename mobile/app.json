@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "Rustaceaans",
+    "slug": "rustaceaans-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rustaceaans.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to take photos and videos for posts.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to upload images and videos.",
+        "NSMicrophoneUsageDescription": "This app needs microphone access to record videos with audio."
+      }
+    },
+    "android": {
+      "package": "com.rustaceaans.mobile",
+      "permissions": [
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "RECORD_AUDIO"
+      ]
+    },
+    "scheme": "rustaceaans",
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Rustaceaans to access your camera"
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Rustaceaans to access your photos",
+          "savePhotosPermission": "Allow Rustaceaans to save photos"
+        }
+      ]
+    ]
+  }
+}
